@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net481</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>PayloadDLL</AssemblyName>
+    <RootNamespace>Payload</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="HP.SystemControl.BiosWmi">
+      <HintPath>..\QuickHPControl\libs\HP.SystemControl.BiosWmi.dll</HintPath>
+    </Reference>
+    <Reference Include="HP.SystemControl.Utility">
+      <HintPath>..\QuickHPControl\libs\HP.SystemControl.Utility.dll</HintPath>
+    </Reference>
+    <Reference Include="HP.SystemControl.Utility.Framework">
+      <HintPath>..\QuickHPControl\libs\HP.SystemControl.Utility.Framework.dll</HintPath>
+    </Reference>
+    <Reference Include="HP.SystemControl.AppData">
+      <HintPath>..\QuickHPControl\libs\HP.SystemControl.AppData.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>
