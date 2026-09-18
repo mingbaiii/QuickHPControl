@@ -14,6 +14,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Threading;
+using Microsoft.Win32;
 using iNKORE.UI.WPF.Modern.Controls;
 
 namespace QuickHPControl;
@@ -29,6 +30,7 @@ public partial class MainWindow : Window, IComponentConnector
 	private int _currentMode = -1;
 	private bool _isUpdatingAutoStart;
 	private bool _isActuallyExiting;
+	private bool _isConnectedSuccessfully;
 
 	private const string BOOTSTRAP_DLL = "BootstrapNative.dll";
 	private const string TASK_NAME = "QuickHPControlAutoStart";
@@ -138,6 +140,30 @@ public partial class MainWindow : Window, IComponentConnector
 	{
 		Log("HP 性能控制启动");
 		CheckAutoStartStatus();
+		SystemEvents.PowerModeChanged += SystemEvents_PowerModeChanged;
+	}
+
+	private async void SystemEvents_PowerModeChanged(object sender, PowerModeChangedEventArgs e)
+	{
+		switch (e.Mode)
+		{
+			case PowerModes.Resume:
+				Log("系统从睡眠/休眠唤醒，等待网络恢复...");
+				App.RestoreNormalPriority();
+				_isConnectedSuccessfully = false;
+				_pollTimer?.Stop();
+				await Task.Delay(3000);
+				Log("尝试重新连接...");
+				await ReconnectAndInject();
+				break;
+
+			case PowerModes.Suspend:
+				Log("系统进入睡眠/休眠...");
+				_pollTimer?.Stop();
+				try { _ipc.Dispose(); } catch { }
+				_isConnectedSuccessfully = false;
+				break;
+		}
 	}
 
 	private void MainWindow_Closing(object sender, CancelEventArgs e)
@@ -149,6 +175,7 @@ public partial class MainWindow : Window, IComponentConnector
 			return;
 		}
 
+		SystemEvents.PowerModeChanged -= SystemEvents_PowerModeChanged;
 		_pollTimer?.Stop();
 		try { _ipc.Dispose(); } catch { }
 		if (_targetProcess != null)
@@ -209,6 +236,7 @@ public partial class MainWindow : Window, IComponentConnector
 				UpdateConnStatus("进程未运行", true);
 				UpdateRunStatus("HP 后台进程启动失败，请确认 myHP 已安装", true);
 				base.Dispatcher.Invoke(() => BtnManualRefresh.Visibility = Visibility.Visible);
+				App.RestoreNormalPriority();
 				return;
 			}
 
@@ -244,6 +272,7 @@ public partial class MainWindow : Window, IComponentConnector
 				UpdateConnStatus("进程未运行", true);
 				UpdateRunStatus("HP 后台进程启动后无法找到", true);
 				base.Dispatcher.Invoke(() => BtnManualRefresh.Visibility = Visibility.Visible);
+				App.RestoreNormalPriority();
 				return;
 			}
 		}
@@ -256,6 +285,7 @@ public partial class MainWindow : Window, IComponentConnector
 		{
 			UpdateConnStatus("注入失败", true);
 			UpdateRunStatus("DLL 注入失败，请检查管理员权限和防病毒设置", true);
+			App.RestoreNormalPriority();
 			return;
 		}
 
@@ -292,10 +322,13 @@ public partial class MainWindow : Window, IComponentConnector
 		{
 			UpdateConnStatus("连接失败", true);
 			UpdateRunStatus("IPC 连接失败", true);
+			App.RestoreNormalPriority();
 			return;
 		}
 
 		UpdateConnStatus("已连接");
+		_isConnectedSuccessfully = true;
+		App.SetSelfPowerSaver();
 		await RefreshAll();
 		CreateModeButtons();
 		UpdateTrayModes();
@@ -386,6 +419,8 @@ public partial class MainWindow : Window, IComponentConnector
 			UpdateConnStatus("连接断开", true);
 			UpdateRunStatus("正在重新连接...", true);
 			_pollTimer?.Stop();
+			_isConnectedSuccessfully = false;
+			App.RestoreNormalPriority();
 			await ReconnectAndInject();
 			return;
 		}
@@ -399,6 +434,8 @@ public partial class MainWindow : Window, IComponentConnector
 			Log("轮询异常: " + ex.Message);
 			Log("尝试重新连接...");
 			_pollTimer?.Stop();
+			_isConnectedSuccessfully = false;
+			App.RestoreNormalPriority();
 			await ReconnectAndInject();
 		}
 	}
@@ -494,6 +531,7 @@ public partial class MainWindow : Window, IComponentConnector
 			UpdateConnStatus("启动失败", true);
 			UpdateRunStatus("HP 后台进程重新启动失败", true);
 			base.Dispatcher.Invoke(() => BtnManualRefresh.Visibility = Visibility.Visible);
+			App.RestoreNormalPriority();
 			return;
 		}
 
@@ -529,6 +567,7 @@ public partial class MainWindow : Window, IComponentConnector
 			UpdateConnStatus("进程未运行", true);
 			UpdateRunStatus("HP 后台进程重新启动后无法找到", true);
 			base.Dispatcher.Invoke(() => BtnManualRefresh.Visibility = Visibility.Visible);
+			App.RestoreNormalPriority();
 			return;
 		}
 
@@ -540,6 +579,7 @@ public partial class MainWindow : Window, IComponentConnector
 		{
 			UpdateConnStatus("注入失败", true);
 			UpdateRunStatus("DLL 注入失败，请检查管理员权限和防病毒设置", true);
+			App.RestoreNormalPriority();
 			return;
 		}
 
@@ -568,6 +608,7 @@ public partial class MainWindow : Window, IComponentConnector
 			UpdateConnStatus("服务未响应", true);
 			UpdateRunStatus("HOOK 端 TCP 服务启动超时，重连失败", true);
 			base.Dispatcher.Invoke(() => BtnManualRefresh.Visibility = Visibility.Visible);
+			App.RestoreNormalPriority();
 			return;
 		}
 
@@ -576,10 +617,13 @@ public partial class MainWindow : Window, IComponentConnector
 		{
 			UpdateConnStatus("连接失败", true);
 			UpdateRunStatus("IPC 连接失败", true);
+			App.RestoreNormalPriority();
 			return;
 		}
 
 		UpdateConnStatus("已连接");
+		_isConnectedSuccessfully = true;
+		App.SetSelfPowerSaver();
 		await RefreshAll();
 		CreateModeButtons();
 		UpdateTrayModes();
@@ -711,21 +755,32 @@ public partial class MainWindow : Window, IComponentConnector
 		}
 	}
 
-	private void CheckAutoStartStatus()
+	private async void CheckAutoStartStatus()
 	{
 		try
 		{
-			using Process p = Process.Start(new ProcessStartInfo
+			bool taskExists = await Task.Run(() =>
 			{
-				FileName = "schtasks.exe",
-				Arguments = "/query /tn \"QuickHPControlAutoStart\"",
-				UseShellExecute = false,
-				CreateNoWindow = true,
-				RedirectStandardOutput = true,
-				RedirectStandardError = true
+				try
+				{
+					using Process p = Process.Start(new ProcessStartInfo
+					{
+						FileName = "schtasks.exe",
+						Arguments = "/query /tn \"QuickHPControlAutoStart\"",
+						UseShellExecute = false,
+						CreateNoWindow = true,
+						RedirectStandardOutput = true,
+						RedirectStandardError = true
+					});
+					p.WaitForExit(5000);
+					return p.ExitCode == 0;
+				}
+				catch
+				{
+					return false;
+				}
 			});
-			p.WaitForExit(5000);
-			bool taskExists = p.ExitCode == 0;
+
 			_isUpdatingAutoStart = true;
 			ToggleAutoStart.IsOn = taskExists;
 			_isUpdatingAutoStart = false;
@@ -934,6 +989,7 @@ public partial class MainWindow : Window, IComponentConnector
 			try { _targetProcess.Dispose(); } catch { }
 			_targetProcess = null;
 		}
+		App.RestoreNormalPriority();
 		Log("程序已退出（DLL 保持驻留）");
 	}
 }

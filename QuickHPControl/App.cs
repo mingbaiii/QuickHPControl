@@ -100,7 +100,6 @@ public partial class App : Application
 		}
 
 		base.ShutdownMode = ShutdownMode.OnExplicitShutdown;
-		SetSelfPowerSaver();
 
 		base.DispatcherUnhandledException += (s, args) => args.Handled = true;
 		AppDomain.CurrentDomain.UnhandledException += (s, args) => { _ = args.ExceptionObject; };
@@ -409,7 +408,10 @@ public partial class App : Application
 	[DllImport("kernel32.dll", SetLastError = true)]
 	private static extern bool SetPriorityClass(IntPtr hProcess, uint dwPriorityClass);
 
-	private static void SetSelfPowerSaver()
+	/// <summary>
+	/// 将进程设为省电模式（IDLE 优先级 + CPU 限速），在连接成功后调用。
+	/// </summary>
+	public static void SetSelfPowerSaver()
 	{
 		IntPtr hProcess = IntPtr.Zero;
 		try
@@ -437,6 +439,43 @@ public partial class App : Application
 			{
 				throw new Win32Exception(Marshal.GetLastWin32Error());
 			}
+		}
+		catch (Win32Exception)
+		{
+		}
+		finally
+		{
+			if (hProcess != IntPtr.Zero)
+			{
+				CloseHandle(hProcess);
+			}
+		}
+	}
+
+	/// <summary>
+	/// 恢复进程为正常优先级（NORMAL 优先级 + 取消 CPU 限速），在断开连接时调用。
+	/// </summary>
+	public static void RestoreNormalPriority()
+	{
+		IntPtr hProcess = IntPtr.Zero;
+		try
+		{
+			int pid = Process.GetCurrentProcess().Id;
+			hProcess = OpenProcess(1536u, false, pid);
+			if (hProcess == IntPtr.Zero)
+			{
+				return;
+			}
+
+			PROCESS_POWER_THROTTLING_STATE powerState = new PROCESS_POWER_THROTTLING_STATE
+			{
+				Version = 1u,
+				ControlMask = 1u,
+				StateMask = 0u
+			};
+
+			SetProcessInformation(hProcess, PROCESS_INFORMATION_CLASS.ProcessPowerThrottling, ref powerState, Marshal.SizeOf(powerState));
+			SetPriorityClass(hProcess, 0x20u);
 		}
 		catch (Win32Exception)
 		{
