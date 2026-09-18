@@ -4,7 +4,7 @@
 ; ================================================================
 
 #define AppName       "QuickHPControl"
-#define AppVersion    "1.0.0.0"
+#define AppVersion    "2.0"
 #define AppPublisher  "mingbai"
 #define AppExeName    "QuickHPControl.exe"
 #define Net481Rel     "533320"   ; .NET 4.8.1 最低 Release 号
@@ -14,7 +14,7 @@ AppId={{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
-DefaultDirName={pf}\{#AppName}
+DefaultDirName={commonpf}\{#AppName}
 DefaultGroupName={#AppName}
 PrivilegesRequired=admin
 OutputDir=Installer
@@ -86,6 +86,5 @@ begin
   begin
     // 强制结束进程（/f），静默隐藏窗口（SW_HIDE）
     ShellExec('open', 'taskkill.exe', '/f /im {#AppExeName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    ShellExec('open', 'taskkill.exe', '/f /im HP.SystemControl.Background.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;

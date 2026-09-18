@@ -1,6 +1,10 @@
 # ================================================================
-#  HP System Control — 一键编译脚本
-#  编译顺序: BootstrapNative → PayloadDLL → QuickHPControl → 打包安装程序
+#  QuickHPControl — 一键编译脚本
+#  编译顺序: QuickHPControl → 打包安装程序
+#
+#  技术方案：直连 root\WMI\hpqBIntM 读写 BIOS 热控模式。
+#  不再需要 C++ 注入器、PayloadDLL，也不再需要 HP 的任何 DLL。
+#
 #  运行方式: powershell -ExecutionPolicy Bypass -File build.ps1
 #           或右键 → "使用 PowerShell 运行"
 # ================================================================
@@ -10,31 +14,12 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
 
 # --- 路径配置 ---
-$MSBuild      = "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\amd64\MSBuild.exe"
-
-$BootstrapDir = Join-Path $ScriptDir "BootstrapNative"
-$BootstrapProj = Join-Path $BootstrapDir "BootstrapNative.vcxproj"
-$BootstrapOut  = Join-Path $BootstrapDir "x64\Release\BootstrapNative.dll"
-
-$PayloadDir   = Join-Path $ScriptDir "PayloadDLL"
-$PayloadProj  = Join-Path $PayloadDir "PayloadDLL.csproj"
-$PayloadOut   = Join-Path $PayloadDir "bin\Release\net481\PayloadDLL.dll"
-
-$QuickHPControlProj      = Join-Path $ScriptDir "QuickHPControl.csproj"
-$OutDir       = Join-Path $ScriptDir "bin\Release\net481"
-$QuickHPControlOut       = Join-Path $OutDir "QuickHPControl.exe"
+$QuickHPControlProj = Join-Path $ScriptDir "QuickHPControl.csproj"
+$OutDir             = Join-Path $ScriptDir "bin\Release\net481"
+$QuickHPControlOut  = Join-Path $OutDir "QuickHPControl.exe"
 
 $ISCC         = "C:\Program Files\Inno Setup 7\ISCC.exe"
 $InstallerIss = Join-Path $ScriptDir "installer.iss"
-
-# 需要复制到输出目录的 HP 库 DLL
-$LibsDir      = Join-Path $ScriptDir "QuickHPControl\libs"
-$HpLibs       = @(
-    "HP.SystemControl.BiosWmi.dll",
-    "HP.SystemControl.Utility.dll",
-    "HP.SystemControl.Utility.Framework.dll",
-    "HP.SystemControl.AppData.dll"
-)
 
 # --- 工具函数 ---
 function Write-Section($title) {
@@ -52,22 +37,6 @@ function Write-Result($name, $ok, $elapsed) {
 
 function Test-Prerequisites {
     $valid = $true
-
-    if (-not (Test-Path $MSBuild)) {
-        Write-Host "  错误: 找不到 MSBuild: $MSBuild" -ForegroundColor Red
-        Write-Host "  请确认 Visual Studio 18 Community 已安装" -ForegroundColor Red
-        $valid = $false
-    }
-
-    if (-not (Test-Path $BootstrapProj)) {
-        Write-Host "  错误: 找不到 BootstrapNative 项目: $BootstrapProj" -ForegroundColor Red
-        $valid = $false
-    }
-
-    if (-not (Test-Path $PayloadProj)) {
-        Write-Host "  错误: 找不到 PayloadDLL 项目: $PayloadProj" -ForegroundColor Red
-        $valid = $false
-    }
 
     if (-not (Test-Path $QuickHPControlProj)) {
         Write-Host "  错误: 找不到 QuickHPControl 项目: $QuickHPControlProj" -ForegroundColor Red
@@ -93,68 +62,9 @@ $TotalTimer = [System.Diagnostics.Stopwatch]::StartNew()
 $AllOk = $true
 
 # ================================================================
-#  1. BootstrapNative (C++ x64 Release, MSBuild)
+#  1. QuickHPControl (WPF .NET 4.8.1 Release, dotnet build)
 # ================================================================
-Write-Section "1/4 编译 BootstrapNative (C++ x64 Release)"
-
-$Timer = [System.Diagnostics.Stopwatch]::StartNew()
-
-# 清理旧输出
-$BootstrapOutDir = Join-Path $BootstrapDir "x64\Release"
-if (Test-Path $BootstrapOutDir) {
-    Remove-Item (Join-Path $BootstrapOutDir "*") -Force -ErrorAction SilentlyContinue
-}
-
-$BootstrapOk = $false
-try {
-    & $MSBuild $BootstrapProj /p:Configuration=Release /p:Platform=x64 /v:minimal /nologo 2>&1 | ForEach-Object {
-        if ($_ -match "error ") {
-            Write-Host "  $_" -ForegroundColor Red
-        }
-    }
-    $BootstrapOk = $LASTEXITCODE -eq 0 -and (Test-Path $BootstrapOut)
-} catch {
-    Write-Host "  异常: $_" -ForegroundColor Red
-}
-$Timer.Stop()
-Write-Result "BootstrapNative" $BootstrapOk $Timer.Elapsed
-if (-not $BootstrapOk) { $AllOk = $false }
-
-
-# ================================================================
-#  2. PayloadDLL (.NET 4.8.1 Release, dotnet build)
-# ================================================================
-Write-Section "2/4 编译 PayloadDLL (.NET 4.8.1 Release)"
-
-$Timer = [System.Diagnostics.Stopwatch]::StartNew()
-
-# 清理旧输出
-$PayloadOutDir = Join-Path $PayloadDir "bin\Release"
-if (Test-Path $PayloadOutDir) {
-    Remove-Item $PayloadOutDir -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-$PayloadOk = $false
-try {
-    & dotnet build $PayloadProj -c Release 2>&1 | ForEach-Object {
-        if ($_ -match "error ") {
-            Write-Host "  $_" -ForegroundColor Red
-        }
-    }
-    $PayloadOk = $LASTEXITCODE -eq 0 -and (Test-Path $PayloadOut)
-} catch {
-    Write-Host "  异常: $_" -ForegroundColor Red
-}
-$Timer.Stop()
-Write-Result "PayloadDLL" $PayloadOk $Timer.Elapsed
-if (-not $PayloadOk) { $AllOk = $false }
-
-
-# ================================================================
-#  3. QuickHPControl (WPF .NET 4.8.1 Release, dotnet build)
-#     → 构建完成后复制 BootstrapNative.dll + PayloadDLL.dll + HP libs
-# ================================================================
-Write-Section "3/4 编译 QuickHPControl (WPF .NET 4.8.1 Release)"
+Write-Section "1/2 编译 QuickHPControl (WPF .NET 4.8.1 Release)"
 
 $Timer = [System.Diagnostics.Stopwatch]::StartNew()
 
@@ -175,46 +85,15 @@ try {
     Write-Host "  异常: $_" -ForegroundColor Red
 }
 
-if ($QuickHPControlBuildOk) {
-    Write-Host "  复制依赖文件到输出目录..." -ForegroundColor Gray
-
-    # 复制 BootstrapNative.dll
-    if (Test-Path $BootstrapOut) {
-        Copy-Item $BootstrapOut $OutDir -Force
-        Write-Host "    [OK] BootstrapNative.dll" -ForegroundColor Gray
-    } else {
-        Write-Host "    [SKIP] BootstrapNative.dll (源文件不存在)" -ForegroundColor Yellow
-    }
-
-    # 复制 PayloadDLL.dll
-    if (Test-Path $PayloadOut) {
-        Copy-Item $PayloadOut $OutDir -Force
-        Write-Host "    [OK] PayloadDLL.dll" -ForegroundColor Gray
-    } else {
-        Write-Host "    [SKIP] PayloadDLL.dll (源文件不存在)" -ForegroundColor Yellow
-    }
-
-    # 复制 HP 库 DLL
-    foreach ($lib in $HpLibs) {
-        $src = Join-Path $LibsDir $lib
-        if (Test-Path $src) {
-            Copy-Item $src $OutDir -Force
-            Write-Host "    [OK] $lib" -ForegroundColor Gray
-        } else {
-            Write-Host "    [SKIP] $lib (源文件不存在)" -ForegroundColor Yellow
-        }
-    }
-}
-
 $Timer.Stop()
 Write-Result "QuickHPControl" $QuickHPControlBuildOk $Timer.Elapsed
 if (-not $QuickHPControlBuildOk) { $AllOk = $false }
 
 
 # ================================================================
-#  4. 打包安装程序 (Inno Setup 7, 仅当编译全部成功时)
+#  2. 打包安装程序 (Inno Setup 7, 仅当编译全部成功时)
 # ================================================================
-Write-Section "4/4 打包安装程序 (Inno Setup 7)"
+Write-Section "2/2 打包安装程序 (Inno Setup 7)"
 
 $InstallerOk = $false
 

@@ -1,12 +1,9 @@
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
-using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -17,45 +14,23 @@ namespace QuickHPControl;
 
 public partial class App : Application
 {
-	private enum PROCESS_INFORMATION_CLASS
-	{
-		ProcessPowerThrottling = 4
-	}
-
-	private struct PROCESS_POWER_THROTTLING_STATE
-	{
-		public uint Version;
-		public uint ControlMask;
-		public uint StateMask;
-	}
-
 	private Win32Tray _tray;
 	private int _lastTrayMode = -1;
-	private int _currentMode = -1;
+	private int _trayIconGeneration;
 	private readonly HashSet<int> _modeTags = new HashSet<int>();
 
-	private const int TAG_AUTO_START = -1;
-	private const int TAG_EXIT = -3;
+	// 托盘菜单项 tag。>= 0 的一律是热控模式值，负数保留给命令项。
+	private const int TAG_ENERGY_SAVER = -5;
 	private const int TAG_SHOW_WINDOW = -4;
-	private const int TAG_PLACEHOLDER = -99;
+	private const int TAG_EXIT = -3;
+	private const int TAG_AUTO_START = -1;
 	private const int TAG_SEPARATOR = -10;
-	private const string TRAY_GLYPH = "\uE9CE";
-	private const string TRAY_ICON_COLOR = "#57c0ff";
-	private const int TRAY_ICON_SIZE = 64;
-	private const string TASK_NAME = "QuickHPControlAutoStart";
-	private const string HIDE_ARG = "--hide";
+	private const int TAG_PLACEHOLDER = -99;
 
 	private Mutex _singleInstanceMutex;
 	private EventWaitHandle _showWindowEvent;
-	private const string MUTEX_NAME = "Global\\QuickHPControl_SingleInstance";
-	private const string SHOW_EVENT_NAME = "Global\\QuickHPControl_ShowWindow";
 	private bool _autoStartChecked;
-
-	private const uint PROCESS_SET_INFORMATION = 512u;
-	private const uint PROCESS_QUERY_INFORMATION = 1024u;
-	private const uint IDLE_PRIORITY_CLASS = 64u;
-	private const int PROCESS_POWER_THROTTLING_EXECUTION_SPEED = 1;
-	private const int PROCESS_POWER_THROTTLING_CURRENT_VERSION = 1;
+	private bool _energySaverChecked;
 
 	public static bool IsHideOnStartup()
 	{
@@ -70,25 +45,23 @@ public partial class App : Application
 		return false;
 	}
 
-	public App()
-	{
-		AppDomain.CurrentDomain.AssemblyResolve += (sender, args) =>
-		{
-			if (new AssemblyName(args.Name).Name == "Newtonsoft.Json")
-			{
-				string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Newtonsoft.Json.dll");
-				if (File.Exists(path))
-				{
-					return Assembly.LoadFrom(path);
-				}
-			}
-			return null;
-		};
-	}
+	// 说明：旧实现曾在此挂 AssemblyResolve 钩子，为注入的 PayloadDLL 顶替
+	// Newtonsoft.Json 依赖。新方案直连 BIOS、不加载 HP 任何程序集，钩子已移除。
 
 	protected override void OnStartup(StartupEventArgs e)
 	{
 		base.OnStartup(e);
+
+		// 诊断开关：QuickHPControl.exe --esaver-test
+		// 做一次节能模式「开→关→还原」往返，结果写到 %TEMP%\QuickHPControl-esaver-test.txt 后退出。
+		// 用于验证 WNF 通道在当前 Windows 版本上仍然有效。
+		if (e.Args != null && e.Args.Length > 0 && e.Args[0] == "--esaver-test")
+		{
+			RunEnergySaverSelfTest();
+			Shutdown();
+			return;
+		}
+
 		_singleInstanceMutex = new Mutex(true, "Global\\QuickHPControl_SingleInstance", out var createdNew);
 		if (!createdNew)
 		{
@@ -105,6 +78,10 @@ public partial class App : Application
 		AppDomain.CurrentDomain.UnhandledException += (s, args) => { _ = args.ExceptionObject; };
 
 		base.MainWindow = new MainWindow();
+
+		// 托盘菜单在连接前就要能显示，节能模式状态直接读一次系统真值
+		_energySaverChecked = EnergySaverManager.GetState() == EnergySaverManager.STATE_ON;
+
 		CreateTrayIcon();
 		StartShowWindowListener();
 
@@ -116,8 +93,77 @@ public partial class App : Application
 		_ = ((MainWindow)base.MainWindow).TryAutoConnect();
 	}
 
-	private Icon CreateFluentIcon(string glyph, string colorHex, int size)
+	// ================================================================
+	//  诊断：节能模式 WNF 通道自检
+	//
+	//  用法: QuickHPControl.exe --esaver-test
+	//  做一次 开 → 关 → 还原 往返，把过程写到
+	//    %TEMP%\QuickHPControl-esaver-test.txt
+	//  然后退出。用来确认 WNF 状态名在当前 Windows 版本上仍然有效。
+	// ================================================================
+	private static void RunEnergySaverSelfTest()
 	{
+		var sb = new System.Text.StringBuilder();
+		string path = System.IO.Path.Combine(
+			System.IO.Path.GetTempPath(), "QuickHPControl-esaver-test.txt");
+
+		try
+		{
+			sb.AppendLine("QuickHPControl 节能模式 WNF 通道自检");
+			sb.AppendLine("时间: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+			sb.AppendLine("WNF 状态名: 0x41C6013DA3BC3075");
+			sb.AppendLine();
+
+			int baseline = EnergySaverManager.GetState();
+			sb.AppendLine("基线 EnergySaverState = " + baseline
+						  + " (" + EnergySaverManager.Describe(baseline) + ")");
+
+			if (baseline < 0)
+			{
+				sb.AppendLine("读取失败，终止。");
+			}
+			else
+			{
+				bool toOn = baseline != EnergySaverManager.STATE_ON;
+
+				sb.AppendLine();
+				sb.AppendLine(">>> 切到 " + (toOn ? "开" : "关"));
+				string err1;
+				bool ok1 = EnergySaverManager.SetEnabled(toOn, out err1);
+				sb.AppendLine("    SetEnabled -> " + (ok1 ? "成功" : "失败")
+							  + (err1 != null ? "  (" + err1 + ")" : ""));
+				sb.AppendLine("    读回 = " + EnergySaverManager.Describe(EnergySaverManager.GetState()));
+
+				Thread.Sleep(1200);
+				sb.AppendLine("    +1.2s = " + EnergySaverManager.Describe(EnergySaverManager.GetState()));
+
+				sb.AppendLine();
+				sb.AppendLine(">>> 还原到 " + baseline);
+				string err2;
+				bool ok2 = EnergySaverManager.SetEnabled(baseline == EnergySaverManager.STATE_ON, out err2);
+				sb.AppendLine("    SetEnabled -> " + (ok2 ? "成功" : "失败")
+							  + (err2 != null ? "  (" + err2 + ")" : ""));
+
+				Thread.Sleep(1200);
+				int fin = EnergySaverManager.GetState();
+				sb.AppendLine("    最终 = " + fin + " (" + EnergySaverManager.Describe(fin) + ")");
+				sb.AppendLine();
+				sb.AppendLine(fin == baseline ? "结论: ✓ 通道可用，已还原" : "结论: ✗ 未还原，请手动检查");
+			}
+		}
+		catch (Exception ex)
+		{
+			sb.AppendLine("异常: " + ex);
+		}
+
+		sb.AppendLine();
+		sb.AppendLine("[DONE]");
+
+		try { System.IO.File.WriteAllText(path, sb.ToString(), System.Text.Encoding.UTF8); }
+		catch { }
+	}
+
+	private Icon CreateFluentIcon(string glyph, string colorHex, int size)	{
 		Color color = ColorTranslator.FromHtml(colorHex);
 		Bitmap bitmap = new Bitmap(size, size, PixelFormat.Format32bppArgb);
 		using (Graphics g = Graphics.FromImage(bitmap))
@@ -222,25 +268,27 @@ public partial class App : Application
 			}
 			else
 			{
-				_tray.AddMenuItem("（无可用模式）", -99, false, false, true);
+				_tray.AddMenuItem("（无可用模式）", TAG_PLACEHOLDER, false, false, true);
 			}
 		}
 		else
 		{
-			_tray.AddMenuItem("（加载中）", -99, false, false, true);
+			_tray.AddMenuItem("（加载中）", TAG_PLACEHOLDER, false, false, true);
 		}
 
-		_tray.AddMenuItem("", -10, false, true);
-		_tray.AddMenuItem("显示界面", -4);
-		_tray.AddMenuItem("", -10, false, true);
-		_tray.AddMenuItem("开机自启", -1, _autoStartChecked, false, !connected);
-		_tray.AddMenuItem("", -10, false, true);
-		_tray.AddMenuItem("退出", -3);
+		_tray.AddMenuItem("", TAG_SEPARATOR, false, true);
+		// 节能模式走 Windows WNF 通道，不依赖 BIOS 连接；未连接时也允许从托盘修改。
+		_tray.AddMenuItem("系统节能模式", TAG_ENERGY_SAVER, _energySaverChecked, false, false);
+		_tray.AddMenuItem("", TAG_SEPARATOR, false, true);
+		_tray.AddMenuItem("显示界面", TAG_SHOW_WINDOW);
+		_tray.AddMenuItem("", TAG_SEPARATOR, false, true);
+		_tray.AddMenuItem("开机自启", TAG_AUTO_START, _autoStartChecked, false, !connected);
+		_tray.AddMenuItem("", TAG_SEPARATOR, false, true);
+		_tray.AddMenuItem("退出", TAG_EXIT);
 	}
 
 	public void UpdateModeMenuItems(List<int> supportedModes, int currentMode)
 	{
-		_currentMode = currentMode;
 		BuildTrayMenu(true, supportedModes, currentMode);
 	}
 
@@ -255,7 +303,6 @@ public partial class App : Application
 		{
 			_tray.SetMenuItemChecked(tag, tag == currentMode);
 		}
-		_currentMode = currentMode;
 		UpdateTrayIcon(currentMode);
 		_tray.RefreshShowingMenu();
 	}
@@ -268,18 +315,55 @@ public partial class App : Application
 		}
 
 		_lastTrayMode = mode;
+		int generation = ++_trayIconGeneration;
 		if (!QuickHPControl.MainWindow.ModeIcons.TryGetValue(mode, out var glyph))
 		{
 			glyph = "";
 		}
-		using Icon icon = CreateTrayIconFromGlyph(glyph);
-		_tray.SetIcon(icon.Handle);
+
+		// GDI 字体/路径绘制不应占用 WPF Dispatcher；在高 DPI 或字体服务繁忙时，
+		// CreateFluentIcon 可能明显变慢。只把最终 SetIcon 投回 UI 线程。
+		_ = System.Threading.Tasks.Task.Run(() =>
+		{
+			Icon icon = CreateTrayIconFromGlyph(glyph);
+			IntPtr handle = icon.Handle;
+			try
+			{
+				Dispatcher.BeginInvoke(new Action(() =>
+				{
+					try
+					{
+						if (_tray != null && !_tray.IsDisposed && generation == _trayIconGeneration)
+						{
+							_tray.SetIcon(handle);
+						}
+					}
+					finally
+					{
+						// SetIcon 内部已经 CopyIcon，之后才可以释放源 Icon。
+						icon.Dispose();
+					}
+				}), DispatcherPriority.Background);
+			}
+			catch
+			{
+				icon.Dispose();
+			}
+		});
 	}
 
 	public void UpdateAutoStartMenuState(bool enabled)
 	{
 		_autoStartChecked = enabled;
-		_tray?.SetMenuItemChecked(-1, enabled);
+		_tray?.SetMenuItemChecked(TAG_AUTO_START, enabled);
+		_tray?.RefreshShowingMenu();
+	}
+
+	/// <summary>同步托盘菜单里「系统节能模式」的勾选状态。</summary>
+	public void UpdateEnergySaverMenuState(bool enabled)
+	{
+		_energySaverChecked = enabled;
+		_tray?.SetMenuItemChecked(TAG_ENERGY_SAVER, enabled);
 		_tray?.RefreshShowingMenu();
 	}
 
@@ -293,13 +377,16 @@ public partial class App : Application
 
 		switch (tag)
 		{
-			case -4:
+			case TAG_SHOW_WINDOW:
 				ShowMainWindow();
 				break;
-			case -1:
+			case TAG_ENERGY_SAVER:
+				HandleEnergySaverToggled(!_energySaverChecked);
+				break;
+			case TAG_AUTO_START:
 				HandleAutoStartToggled(!_autoStartChecked);
 				break;
-			case -3:
+			case TAG_EXIT:
 				ExitApplication();
 				break;
 		}
@@ -311,27 +398,40 @@ public partial class App : Application
 		{
 			_tray.SetMenuItemChecked(tag, tag == mode);
 		}
-		_currentMode = mode;
-		base.Dispatcher.Invoke(() =>
+		// BeginInvoke：托盘线程不等 UI，避免菜单「粘住」不消失
+		base.Dispatcher.BeginInvoke(new Action(() =>
 		{
 			if (base.MainWindow is MainWindow mainWindow)
 			{
 				mainWindow.SetModeFromTray(mode);
 			}
-		});
+		}));
+	}
+
+	private void HandleEnergySaverToggled(bool newState)
+	{
+		_energySaverChecked = newState;
+		_tray.SetMenuItemChecked(TAG_ENERGY_SAVER, newState);
+		base.Dispatcher.BeginInvoke(new Action(() =>
+		{
+			if (base.MainWindow is MainWindow mainWindow)
+			{
+				mainWindow.SetEnergySaverFromTray(newState);
+			}
+		}));
 	}
 
 	private void HandleAutoStartToggled(bool newState)
 	{
 		_autoStartChecked = newState;
-		_tray.SetMenuItemChecked(-1, newState);
-		base.Dispatcher.Invoke(() =>
+		_tray.SetMenuItemChecked(TAG_AUTO_START, newState);
+		base.Dispatcher.BeginInvoke(new Action(() =>
 		{
 			if (base.MainWindow is MainWindow mainWindow)
 			{
 				mainWindow.ToggleAutoStartFromTray(newState);
 			}
-		});
+		}));
 	}
 
 	private void ExitApplication()
@@ -396,96 +496,4 @@ public partial class App : Application
 		base.OnExit(e);
 	}
 
-	[DllImport("kernel32.dll", SetLastError = true)]
-	private static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);
-
-	[DllImport("kernel32.dll", SetLastError = true)]
-	private static extern bool CloseHandle(IntPtr hObject);
-
-	[DllImport("kernel32.dll", SetLastError = true)]
-	private static extern bool SetProcessInformation(IntPtr hProcess, PROCESS_INFORMATION_CLASS ProcessInformationClass, ref PROCESS_POWER_THROTTLING_STATE ProcessInformation, int ProcessInformationSize);
-
-	[DllImport("kernel32.dll", SetLastError = true)]
-	private static extern bool SetPriorityClass(IntPtr hProcess, uint dwPriorityClass);
-
-	/// <summary>
-	/// 将进程设为省电模式（IDLE 优先级 + CPU 限速），在连接成功后调用。
-	/// </summary>
-	public static void SetSelfPowerSaver()
-	{
-		IntPtr hProcess = IntPtr.Zero;
-		try
-		{
-			int pid = Process.GetCurrentProcess().Id;
-			hProcess = OpenProcess(1536u, false, pid);
-			if (hProcess == IntPtr.Zero)
-			{
-				throw new Win32Exception(Marshal.GetLastWin32Error());
-			}
-
-			PROCESS_POWER_THROTTLING_STATE powerState = new PROCESS_POWER_THROTTLING_STATE
-			{
-				Version = 1u,
-				ControlMask = 1u,
-				StateMask = 1u
-			};
-
-			if (!SetProcessInformation(hProcess, PROCESS_INFORMATION_CLASS.ProcessPowerThrottling, ref powerState, Marshal.SizeOf(powerState)))
-			{
-				throw new Win32Exception(Marshal.GetLastWin32Error());
-			}
-
-			if (!SetPriorityClass(hProcess, 64u))
-			{
-				throw new Win32Exception(Marshal.GetLastWin32Error());
-			}
-		}
-		catch (Win32Exception)
-		{
-		}
-		finally
-		{
-			if (hProcess != IntPtr.Zero)
-			{
-				CloseHandle(hProcess);
-			}
-		}
-	}
-
-	/// <summary>
-	/// 恢复进程为正常优先级（NORMAL 优先级 + 取消 CPU 限速），在断开连接时调用。
-	/// </summary>
-	public static void RestoreNormalPriority()
-	{
-		IntPtr hProcess = IntPtr.Zero;
-		try
-		{
-			int pid = Process.GetCurrentProcess().Id;
-			hProcess = OpenProcess(1536u, false, pid);
-			if (hProcess == IntPtr.Zero)
-			{
-				return;
-			}
-
-			PROCESS_POWER_THROTTLING_STATE powerState = new PROCESS_POWER_THROTTLING_STATE
-			{
-				Version = 1u,
-				ControlMask = 1u,
-				StateMask = 0u
-			};
-
-			SetProcessInformation(hProcess, PROCESS_INFORMATION_CLASS.ProcessPowerThrottling, ref powerState, Marshal.SizeOf(powerState));
-			SetPriorityClass(hProcess, 0x20u);
-		}
-		catch (Win32Exception)
-		{
-		}
-		finally
-		{
-			if (hProcess != IntPtr.Zero)
-			{
-				CloseHandle(hProcess);
-			}
-		}
-	}
 }

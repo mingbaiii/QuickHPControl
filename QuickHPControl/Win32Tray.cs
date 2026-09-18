@@ -89,6 +89,8 @@ public class Win32Tray : IDisposable
 	private IntPtr _hCurrentIcon;
 	private bool _visible;
 	private bool _disposed;
+
+	public bool IsDisposed => _disposed;
 	private string _tooltip = "";
 	private bool _isMenuShowing;
 	private bool _useLastPos;

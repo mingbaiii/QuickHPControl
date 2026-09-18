@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Window x:Class="QuickHPControl.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:ui="http://schemas.inkore.net/lib/ui/wpf/modern" xmlns:ikw="http://schemas.inkore.net/lib/ui/wpf" ui:WindowHelper.UseModernWindowStyle="True" ui:WindowHelper.SystemBackdropType="Mica" ui:TitleBar.Height="48" Title="HP 性能控制" Width="540" Height="700" MinWidth="440" MinHeight="560" xmlns:ourhpcontrol="clr-namespace:QuickHPControl;assembly=QuickHPControl">
+<Window x:Class="QuickHPControl.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:ui="http://schemas.inkore.net/lib/ui/wpf/modern" xmlns:ikw="http://schemas.inkore.net/lib/ui/wpf" ui:WindowHelper.UseModernWindowStyle="True" ui:WindowHelper.SystemBackdropType="Mica" ui:TitleBar.Height="48" Title="HP 性能控制" Width="512" Height="700" MinWidth="512" MinHeight="560" xmlns:ourhpcontrol="clr-namespace:QuickHPControl;assembly=QuickHPControl">
   <ui:NavigationView Name="MainNavView" IsBackButtonVisible="Collapsed" IsSettingsVisible="True" PaneDisplayMode="Top" SelectionChanged="MainNavView_SelectionChanged">
     <ui:NavigationView.MenuItems>
       <ui:NavigationViewItem Name="PerformanceItem" Content="性能控制" Tag="performance">
@@ -38,7 +38,51 @@
         <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
           <StackPanel>
             <TextBlock Text="选择性能模式" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,12" />
-            <WrapPanel Name="ModePanel" />
+            <WrapPanel Name="ModePanel" Width="468" HorizontalAlignment="Center"/>
+            <Border Background="{DynamicResource ControlFillColorDefaultBrush}" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8" Padding="14,12" Margin="0,8,0,0">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="32" />
+                  <ColumnDefinition Width="12" />
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="66" />
+                </Grid.ColumnDefinitions>
+                <ui:FontIcon Grid.Column="0" Glyph="&#xEA95;" FontFamily="Segoe Fluent Icons" FontSize="22" Foreground="{DynamicResource TextFillColorSecondaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                  <TextBlock Text="系统节能模式" FontWeight="SemiBold" />
+                  <TextBlock Text="减少能耗并延长电池寿命" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,2,0,0" />
+                </StackPanel>
+                <ui:ToggleSwitch Name="ToggleEnergySaver" Grid.Column="3" VerticalAlignment="Center" Toggled="ToggleEnergySaver_Toggled" />
+              </Grid>
+            </Border>
+            <TextBlock Name="FanHeaderText" Text="风扇控制" FontSize="16" FontWeight="SemiBold" Margin="0,20,0,12" Visibility="Collapsed" />
+            <StackPanel Name="FanSection" Visibility="Collapsed">
+              <Border Background="{DynamicResource ControlFillColorDefaultBrush}" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8" Padding="16,12" Margin="0,0,0,12">
+                <Grid>
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                  </Grid.ColumnDefinitions>
+                  <StackPanel Grid.Column="0">
+                    <TextBlock Text="最大转速" FontWeight="SemiBold" />
+                    <TextBlock Text="强制风扇全速运转，散热优先" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                  </StackPanel>
+                  <ui:ToggleSwitch Name="ToggleMaxFan" Grid.Column="1" VerticalAlignment="Center" Toggled="ToggleMaxFan_Toggled" />
+                </Grid>
+              </Border>
+              <Border Background="{DynamicResource ControlFillColorDefaultBrush}" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8" Padding="16,12">
+                <StackPanel>
+                  <Grid>
+                    <TextBlock Text="转速级别" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    <TextBlock Name="TxtFanLevelValue" HorizontalAlignment="Right" VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Text="—" />
+                  </Grid>
+                  <Slider Name="SliderFanLevel" Minimum="0" Maximum="55" TickFrequency="1" IsSnapToTickEnabled="True" Margin="0,4,0,0" ValueChanged="SliderFanLevel_ValueChanged" />
+                  <TextBlock Text="数值越高转速越快。部分机型需 HP 风扇手动模式才生效；设置过低可能导致温度升高，请谨慎使用。" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                  <Button Name="BtnApplyFanLevel" Content="应用转速级别" HorizontalAlignment="Left" Padding="16,6" Margin="0,10,0,0" Click="BtnApplyFanLevel_Click" />
+                  <TextBlock Name="TxtFanDetail" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" Margin="0,10,0,0" Text="—" />
+                </StackPanel>
+              </Border>
+            </StackPanel>
           </StackPanel>
         </ScrollViewer>
       </Grid>
@@ -53,12 +97,20 @@
               <TextBlock Name="TxtConnStatusSettings" Text="未连接" />
             </ui:SettingsCard.Description>
           </ui:SettingsCard>
-          <ui:SettingsCard Header="系统版本">
+          <ui:SettingsCard Header="BIOS 版本">
             <ui:SettingsCard.HeaderIcon>
               <ui:FontIcon Glyph="&#xE770;" FontFamily="Segoe Fluent Icons" />
             </ui:SettingsCard.HeaderIcon>
             <ui:SettingsCard.Description>
               <TextBlock Name="TxtVersionSettings" Text="—" />
+            </ui:SettingsCard.Description>
+          </ui:SettingsCard>
+          <ui:SettingsCard Header="程序版本">
+            <ui:SettingsCard.HeaderIcon>
+              <ui:FontIcon Glyph="&#xE7C3;" FontFamily="Segoe Fluent Icons" />
+            </ui:SettingsCard.HeaderIcon>
+            <ui:SettingsCard.Description>
+              <TextBlock Name="TxtAppVersion" Text="—" />
             </ui:SettingsCard.Description>
           </ui:SettingsCard>
           <ui:SettingsCard Header="运行状态">
