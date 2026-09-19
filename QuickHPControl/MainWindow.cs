@@ -545,6 +545,9 @@ public partial class MainWindow : Window, IComponentConnector
             if (energySaverKnown)
             {
                 ApplyEnergySaverUi(energySaverOn);
+                // 轮询读到的最新节能模式也要同步给托盘菜单，
+                // 否则托盘「系统节能模式」勾选状态不会跟随外部改动自动刷新。
+                UpdateTrayEnergySaver();
             }
 
             UpdateModeButtons();
